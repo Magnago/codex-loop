@@ -1,0 +1,36 @@
+# codex-loop runtime state
+.codex-loop/
+
+# Local agent/tool metadata
+.serena/
+
+# Script backup files created during install/update
+*.bak
+*.bak-*
+
+# PowerShell/editor temp files
+*.tmp
+*.temp
+*.log
+*.ps1xml
+
+# Python cache, useful because codex-loop often works in Python projects
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node dependencies, useful because the global shim is often installed near npm tools
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
