@@ -19,6 +19,7 @@ The wrapper turns your raw prompt into a short, structured goal, shows it for ap
 - YOLO/full-access Codex execution by default.
 - JSON result contract attached automatically to every Codex run.
 - Accumulated attempt history passed into future attempts.
+- Reusable project context cache enabled by default to reduce repeated repo scans.
 - Optional external verifier command.
 - Compact, human-readable progress output.
 - Verbose raw command trace available with `-ShowCommands`.
@@ -122,6 +123,7 @@ Each target project gets a local `.codex-loop` folder:
   original-prompt.txt
   approved-goal.txt
   goal.md
+  project-context.md
   codex-result-schema.json
   history.json
   state.json
@@ -135,6 +137,7 @@ Each target project gets a local `.codex-loop` folder:
 Every new attempt receives:
 
 - the approved goal,
+- the reusable project context from `.codex-loop/project-context.md`,
 - the required JSON result schema,
 - the previous failures,
 - what was already tried,
@@ -143,6 +146,8 @@ Every new attempt receives:
 - and the next suggested plan.
 
 That is what prevents Codex from starting fresh each time.
+
+The first attempt may inspect the project broadly. After that, `codex-loop` writes a compact project map to `.codex-loop/project-context.md` from Codex's final JSON: important files, commands, interfaces, validation facts, changed files, dead ends, and next steps. Later attempts are told to trust that context first and only reread files related to the current failure or files they plan to edit.
 
 ## Success Rules
 
