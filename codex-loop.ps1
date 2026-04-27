@@ -888,6 +888,32 @@ function Format-ResultText {
     return Format-OneLine -Text $clean -MaxChars $MaxChars
 }
 
+function Format-DisplayPath {
+    param([AllowNull()][string]$PathText)
+
+    if ([string]::IsNullOrWhiteSpace($PathText)) {
+        return ""
+    }
+
+    $display = [string]$PathText
+    try {
+        $projectRoot = [System.IO.Path]::GetFullPath($Project)
+        $fullPath = [System.IO.Path]::GetFullPath($display)
+        if ($fullPath.StartsWith($projectRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $relative = $fullPath.Substring($projectRoot.Length).TrimStart("\", "/")
+            if ($relative) {
+                return $relative
+            }
+            return "."
+        }
+    }
+    catch {
+        # Best-effort cleanup only.
+    }
+
+    return $display
+}
+
 function Reset-ProgressActivity {
     $script:ProgressActivity = [ordered]@{
         Commands  = 0
@@ -1063,7 +1089,9 @@ function Write-HumanResult {
     Write-Host "Result"
     Write-Host "------"
     Write-Host ("Status: {0}" -f $LoopResult.actual_status)
-    Write-Host ("Decision: {0}" -f $LoopResult.decision_source)
+    if ($ShowCommands) {
+        Write-Host ("Decision: {0}" -f $LoopResult.decision_source)
+    }
 
     if (-not [string]::IsNullOrWhiteSpace([string]$summary)) {
         Write-Host ("Summary: {0}" -f (Format-ResultText -Text $summary -MaxChars 500))
@@ -1092,7 +1120,7 @@ function Write-HumanResult {
         Write-Host ("Context: {0}" -f (Format-ResultText -Text $context -MaxChars 500))
     }
 
-    Write-Host ("Logs: {0}" -f $LoopResult.run_dir)
+    Write-Host ("Logs: {0}" -f (Format-DisplayPath -PathText $LoopResult.run_dir))
 
     if ($ShowJson -and -not [string]::IsNullOrWhiteSpace($JsonText)) {
         Write-Host ""
