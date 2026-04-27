@@ -100,16 +100,18 @@ Default output is intentionally human-readable:
 ```text
 Attempt 1/10
 -------------
-  Codex is working...
   Reading the project structure and current test setup.
-  - Reading README.md...
-  - Listing project files...
-  - Running tests...
-  Tests finished
+
+  Inspected 8 items, ran 6 commands
+
+  The first pass exposed two failing tests around path handling. I am tightening that logic and rerunning the focused suite.
+
+  Edited 1 file, ran 2 commands
+
   Success: Fixed the failing tests and verified the suite passes.
 ```
 
-Use `-ShowCommands` if you need the raw shell commands for debugging.
+Default mode hides individual shell commands and file reads. Use `-ShowCommands` if you need the raw trace for debugging.
 
 ## How Retry State Works
 

@@ -786,16 +786,6 @@ function Get-HumanCommandCompletion {
     return "$Action finished"
 }
 
-function Should-PrintHumanCommandStart {
-    param([AllowNull()][string]$Command)
-
-    if ($ShowCommands) {
-        return $true
-    }
-
-    return $true
-}
-
 function Should-ShowCommandOutput {
     param(
         [AllowNull()][string]$Command,
@@ -879,6 +869,182 @@ function Format-OutputPreview {
     return Format-OneLine -Text $clean -MaxChars $MaxChars
 }
 
+function Format-ResultText {
+    param(
+        [AllowNull()][string]$Text,
+        [int]$MaxChars = 500
+    )
+
+    $clean = [string]$Text
+    try {
+        $projectRoot = [System.IO.Path]::GetFullPath($Project)
+        $clean = $clean.Replace($projectRoot, ".")
+        $clean = $clean.Replace($projectRoot.Replace('\', '\\'), ".")
+    }
+    catch {
+        # Best-effort cleanup only.
+    }
+
+    return Format-OneLine -Text $clean -MaxChars $MaxChars
+}
+
+function Reset-ProgressActivity {
+    $script:ProgressActivity = [ordered]@{
+        Commands  = 0
+        Inspected = 0
+        Created   = 0
+        Edited    = 0
+        Deleted   = 0
+        Failed    = 0
+    }
+}
+
+function Add-ProgressCommandActivity {
+    param(
+        [AllowNull()][string]$Command,
+        [AllowNull()]$ExitCode
+    )
+
+    if ($null -eq $script:ProgressActivity) {
+        Reset-ProgressActivity
+    }
+
+    $display = (Format-CommandDisplay -Command $Command -MaxChars 4000).Trim()
+    $verb = (Get-CommandVerb -Command $display).ToLowerInvariant()
+
+    $script:ProgressActivity.Commands++
+
+    if ($null -ne $ExitCode -and [string]$ExitCode -ne "0") {
+        $script:ProgressActivity.Failed++
+    }
+
+    if ($verb -in @("get-content", "type", "import-csv", "get-childitem", "dir", "ls", "rg", "select-string", "findstr")) {
+        $script:ProgressActivity.Inspected++
+    }
+
+    if ($display -match "(?i)\b(new-item|mkdir)\b") {
+        $script:ProgressActivity.Created++
+    }
+    elseif ($display -match "(?i)\b(remove-item|del|erase|rm)\b") {
+        $script:ProgressActivity.Deleted++
+    }
+    elseif ($display -match "(?i)\b(apply_patch|set-content|add-content|out-file|copy-item|move-item)\b") {
+        $script:ProgressActivity.Edited++
+    }
+}
+
+function Add-ProgressFileActivity {
+    param([AllowNull()]$Changes)
+
+    if ($null -eq $script:ProgressActivity) {
+        Reset-ProgressActivity
+    }
+
+    foreach ($change in @($Changes)) {
+        $kind = [string](Get-ObjectPropertyValue -Object $change -Name "kind")
+        switch ($kind.ToLowerInvariant()) {
+            "add" { $script:ProgressActivity.Created++ }
+            "create" { $script:ProgressActivity.Created++ }
+            "update" { $script:ProgressActivity.Edited++ }
+            "modify" { $script:ProgressActivity.Edited++ }
+            "delete" { $script:ProgressActivity.Deleted++ }
+            "remove" { $script:ProgressActivity.Deleted++ }
+            default { $script:ProgressActivity.Edited++ }
+        }
+    }
+}
+
+function Format-ActivityPhrase {
+    param(
+        [int]$Count,
+        [string]$Verb,
+        [string]$SingularNoun,
+        [string]$PluralNoun
+    )
+
+    if ($Count -eq 1) {
+        return "$Verb 1 $SingularNoun"
+    }
+
+    return "$Verb $Count $PluralNoun"
+}
+
+function ConvertTo-SentenceStart {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $Text
+    }
+
+    if ($Text.Length -eq 1) {
+        return $Text.ToUpperInvariant()
+    }
+
+    return $Text.Substring(0, 1).ToUpperInvariant() + $Text.Substring(1)
+}
+
+function Write-ProgressActivitySummary {
+    if ($ShowCommands) {
+        return
+    }
+
+    if ($null -eq $script:ProgressActivity) {
+        Reset-ProgressActivity
+        return
+    }
+
+    $parts = New-Object 'System.Collections.Generic.List[string]'
+    if ($script:ProgressActivity.Created -gt 0) {
+        $parts.Add((Format-ActivityPhrase -Count $script:ProgressActivity.Created -Verb "created" -SingularNoun "file" -PluralNoun "files")) | Out-Null
+    }
+    if ($script:ProgressActivity.Edited -gt 0) {
+        $parts.Add((Format-ActivityPhrase -Count $script:ProgressActivity.Edited -Verb "edited" -SingularNoun "file" -PluralNoun "files")) | Out-Null
+    }
+    if ($script:ProgressActivity.Deleted -gt 0) {
+        $parts.Add((Format-ActivityPhrase -Count $script:ProgressActivity.Deleted -Verb "removed" -SingularNoun "file" -PluralNoun "files")) | Out-Null
+    }
+    if ($script:ProgressActivity.Inspected -gt 0) {
+        $parts.Add((Format-ActivityPhrase -Count $script:ProgressActivity.Inspected -Verb "inspected" -SingularNoun "item" -PluralNoun "items")) | Out-Null
+    }
+    if ($script:ProgressActivity.Commands -gt 0) {
+        $parts.Add((Format-ActivityPhrase -Count $script:ProgressActivity.Commands -Verb "ran" -SingularNoun "command" -PluralNoun "commands")) | Out-Null
+    }
+    if ($script:ProgressActivity.Failed -gt 0) {
+        $parts.Add((Format-ActivityPhrase -Count $script:ProgressActivity.Failed -Verb "hit" -SingularNoun "failure" -PluralNoun "failures")) | Out-Null
+    }
+
+    if ($parts.Count -gt 0) {
+        Write-Host ("  {0}" -f (ConvertTo-SentenceStart -Text ($parts -join ", "))) -ForegroundColor DarkGray
+        Write-Host ""
+    }
+
+    Reset-ProgressActivity
+}
+
+function Write-AgentParagraph {
+    param(
+        [AllowNull()][string]$Text,
+        [switch]$Success,
+        [switch]$Failure
+    )
+
+    $message = Format-OneLine -Text $Text -MaxChars 700
+    if ([string]::IsNullOrWhiteSpace($message)) {
+        return
+    }
+
+    if ($Success) {
+        Write-Host ("  Success: {0}" -f $message)
+    }
+    elseif ($Failure) {
+        Write-Host ("  Not solved yet: {0}" -f $message)
+    }
+    else {
+        Write-Host ("  {0}" -f $message)
+    }
+    Write-Host ""
+}
+
 function Write-HumanResult {
     param(
         $LoopResult,
@@ -900,7 +1066,7 @@ function Write-HumanResult {
     Write-Host ("Decision: {0}" -f $LoopResult.decision_source)
 
     if (-not [string]::IsNullOrWhiteSpace([string]$summary)) {
-        Write-Host ("Summary: {0}" -f (Format-OneLine -Text $summary -MaxChars 500))
+        Write-Host ("Summary: {0}" -f (Format-ResultText -Text $summary -MaxChars 500))
     }
 
     if ($filesChanged.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$filesChanged[0])) {
@@ -920,10 +1086,10 @@ function Write-HumanResult {
     }
 
     if ($LoopResult.actual_status -ne "success" -and -not [string]::IsNullOrWhiteSpace([string]$failure)) {
-        Write-Host ("Failure: {0}" -f (Format-OneLine -Text $failure -MaxChars 500))
+        Write-Host ("Failure: {0}" -f (Format-ResultText -Text $failure -MaxChars 500))
     }
     elseif (-not [string]::IsNullOrWhiteSpace([string]$context)) {
-        Write-Host ("Context: {0}" -f (Format-OneLine -Text $context -MaxChars 500))
+        Write-Host ("Context: {0}" -f (Format-ResultText -Text $context -MaxChars 500))
     }
 
     Write-Host ("Logs: {0}" -f $LoopResult.run_dir)
@@ -959,7 +1125,9 @@ function Write-CodexEventProgress {
             }
         }
         "turn.started" {
-            Write-Host "  Codex is working..."
+            if ($ShowCommands) {
+                Write-Host "  Codex is working..."
+            }
         }
         "item.started" {
             $item = Get-ObjectPropertyValue -Object $event -Name "item"
@@ -969,9 +1137,9 @@ function Write-CodexEventProgress {
                 if ($ShowCommands -and (Should-ShowCommandEvent -Command $command -ExitCode $null -Completed:$false)) {
                     Write-Host ("  > {0}" -f (Format-CommandDisplay -Command $command -MaxChars 180))
                 }
-                elseif (Should-PrintHumanCommandStart -Command $command) {
-                    Write-Host ("  - {0}..." -f (Get-HumanCommandAction -Command $command -ExitCode $null -Completed:$false))
-                }
+            }
+            elseif ($ShowCommands -and $itemType -eq "file_change") {
+                Write-Host "  > editing files"
             }
         }
         "item.completed" {
@@ -988,16 +1156,17 @@ function Write-CodexEventProgress {
                     }
                     $summary = Get-ObjectPropertyValue -Object $json -Name "attempt_summary"
                     if ($status -or $summary) {
-                        $summaryText = Format-OneLine -Text $summary -MaxChars 280
+                        Write-ProgressActivitySummary
+                        $summaryText = Format-OneLine -Text $summary -MaxChars 700
                         if (-not [string]::IsNullOrWhiteSpace($summaryText)) {
                             if ($status -eq "success") {
-                                Write-Host ("  Success: {0}" -f $summaryText)
+                                Write-AgentParagraph -Text $summaryText -Success
                             }
                             elseif ($status -eq "failure") {
-                                Write-Host ("  Not solved yet: {0}" -f $summaryText)
+                                Write-AgentParagraph -Text $summaryText -Failure
                             }
                             else {
-                                Write-Host ("  {0}" -f $summaryText)
+                                Write-AgentParagraph -Text $summaryText
                             }
                         }
                         return
@@ -1007,30 +1176,30 @@ function Write-CodexEventProgress {
                     # The final message should be JSON, but intermediate messages may be plain text.
                 }
 
-                Write-Host ("  {0}" -f (Format-OneLine -Text $text -MaxChars 300))
+                Write-ProgressActivitySummary
+                Write-AgentParagraph -Text $text
             }
             elseif ($itemType -eq "command_execution") {
                 $rawCommand = Get-ObjectPropertyValue -Object $item -Name "command"
                 $command = Format-CommandDisplay -Command $rawCommand -MaxChars 160
                 $exitCode = Get-ObjectPropertyValue -Object $item -Name "exit_code"
                 $status = Get-ObjectPropertyValue -Object $item -Name "status"
+                Add-ProgressCommandActivity -Command $rawCommand -ExitCode $exitCode
                 $showCommandEvent = Should-ShowCommandEvent -Command $rawCommand -ExitCode $exitCode -Completed:$true
                 if ($ShowCommands -and $showCommandEvent) {
                     Write-Host "  < exit ${exitCode}: $command"
                 }
-                elseif ($null -ne $exitCode -and [string]$exitCode -ne "0") {
-                    Write-Host ("  ! Problem while {0}" -f ((Get-HumanCommandAction -Command $rawCommand -ExitCode $exitCode -Completed:$true).ToLowerInvariant()))
-                }
-                elseif (-not $ShowCommands) {
-                    $action = Get-HumanCommandAction -Command $rawCommand -ExitCode $exitCode -Completed:$true
-                    if ($action -match "^(Running tests|Running .+|Checking code quality|Updating files)$") {
-                        Write-Host ("  {0}" -f (Get-HumanCommandCompletion -Action $action))
-                    }
-                }
 
                 $rawOutput = [string](Get-ObjectPropertyValue -Object $item -Name "aggregated_output")
-                if (($ShowCommands -or ($null -ne $exitCode -and [string]$exitCode -ne "0")) -and (Should-ShowCommandOutput -Command $rawCommand -ExitCode $exitCode -Output $rawOutput)) {
+                if ($ShowCommands -and (Should-ShowCommandOutput -Command $rawCommand -ExitCode $exitCode -Output $rawOutput)) {
                     Write-Host ("    {0}" -f (Format-OutputPreview -Output $rawOutput -MaxChars 260))
+                }
+            }
+            elseif ($itemType -eq "file_change") {
+                $changes = Get-ObjectPropertyValue -Object $item -Name "changes"
+                Add-ProgressFileActivity -Changes $changes
+                if ($ShowCommands) {
+                    Write-Host "  < files updated"
                 }
             }
         }
@@ -1499,7 +1668,9 @@ $runDir
     Write-Host ""
     Write-Host ("Attempt {0}/{1}" -f $iteration, ($startIteration + $MaxRuns - 1))
     Write-Host "-------------"
+    Reset-ProgressActivity
     $codexResult = Invoke-CodexAttempt -Prompt $prompt -WorkingDirectory $resolvedProject -RunDirectory $runDir -SessionId $sessionId -NeedSkipGitRepoCheck $needSkipGitRepoCheck -OutputSchemaPath $outputSchemaPath
+    Write-ProgressActivitySummary
     if ($codexResult.ThreadId) {
         $sessionId = $codexResult.ThreadId
     }
