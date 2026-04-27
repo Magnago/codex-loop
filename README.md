@@ -29,7 +29,6 @@ The wrapper turns your raw prompt into a short, structured goal, shows it for ap
 ```text
 codex-loop.ps1          Main PowerShell implementation
 codex-loop.cmd          Windows command shim
-README-codex-loop.md    Detailed reference notes
 README.md               Project overview
 ```
 
@@ -37,10 +36,10 @@ README.md               Project overview
 
 Copy both command files into a folder on your `PATH`.
 
-On this machine, the global npm command folder is:
+For many Windows Codex/npm installs, the user-level command folder is:
 
 ```text
-C:\Users\Fmagnago\AppData\Roaming\npm
+%APPDATA%\npm
 ```
 
 Install manually:
@@ -69,7 +68,7 @@ Run against a specific project:
 ```powershell
 codex-loop `
   "Create a robust scalping strategy and validate it across BTC, ETH, and SOL." `
-  -Project "C:\Users\Fmagnago\Documents\New project" `
+  -Project "C:\Path\To\Your\Project" `
   -MaxRuns 20
 ```
 
