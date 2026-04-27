@@ -20,6 +20,8 @@ The wrapper turns your raw prompt into a short, structured goal, shows it for ap
 - JSON result contract attached automatically to every Codex run.
 - Accumulated attempt history passed into future attempts.
 - Reusable project context cache enabled by default to reduce repeated repo scans.
+- Live `Working.`, `Working..`, `Working...` heartbeat while Codex is quiet in an interactive terminal.
+- False-success guard: if Codex claims success but says the goal was not met, the wrapper keeps retrying.
 - Optional external verifier command.
 - Compact, human-readable progress output.
 - Verbose raw command trace available with `-ShowCommands`.
@@ -114,6 +116,8 @@ Attempt 1/10
 
 Default mode hides individual shell commands and file reads. Use `-ShowCommands` if you need the raw trace for debugging.
 
+When run in an interactive terminal, `codex-loop` also shows a small `Working...` heartbeat while Codex is busy but has not emitted a new update yet. The heartbeat is disabled automatically when output is redirected to a file, so logs stay clean.
+
 ## How Retry State Works
 
 Each target project gets a local `.codex-loop` folder:
@@ -161,6 +165,8 @@ Without `-SuccessCommand`, success is based on Codex's final JSON:
 ```
 
 With `-SuccessCommand`, the verifier exit code decides the real result. Exit code `0` means success; anything else triggers the next attempt.
+
+There is also a false-success guard. If Codex returns `status: "success"` but its own summary says the goal was not actually acquired, for example "no qualifying strategy found", "failed to meet", or "below 55%", the wrapper overrides that attempt to failure and continues the loop.
 
 ## Useful Options
 

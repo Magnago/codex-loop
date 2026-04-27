@@ -409,6 +409,11 @@ The loop reads this JSON before deciding whether to stop or make another attempt
 
 Use the "context" field as reusable project memory for future attempts. Keep it compact but include the important project structure, relevant files, commands discovered, interfaces/APIs learned, validation facts, and dead ends. Future attempts will receive that context to avoid rereading the whole project.
 
+Important success rule:
+- Return status "success" only when the requested goal is actually acquired.
+- If you created a report, documented a failed search, proved that no candidate met the criteria, or only explained why the target was not reached, return status "failure".
+- A useful failure report is still a failure for this loop.
+
 Use this JSON Schema:
 $SchemaText
 "@
@@ -539,6 +544,71 @@ function Get-CodexClaimStatus {
     }
 
     return "unknown"
+}
+
+function Test-CodexResultIndicatesUnmetGoal {
+    param([AllowNull()]$CodexResultObject)
+
+    if ($null -eq $CodexResultObject) {
+        return $null
+    }
+
+    $parts = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($name in @("attempt_summary", "context", "failure_details", "notes_for_next_run")) {
+        $value = Get-ObjectPropertyValue -Object $CodexResultObject -Name $name
+        if (-not [string]::IsNullOrWhiteSpace([string]$value)) {
+            $parts.Add([string]$value) | Out-Null
+        }
+    }
+    foreach ($name in @("changes_made", "next_attempt_plan")) {
+        foreach ($value in @((Get-ObjectPropertyValue -Object $CodexResultObject -Name $name))) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$value)) {
+                $parts.Add([string]$value) | Out-Null
+            }
+        }
+    }
+
+    $text = (($parts.ToArray()) -join " ").ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $null
+    }
+
+    $patterns = @(
+        "no qualifying",
+        "no qualified",
+        "no valid",
+        "no candidate",
+        "no strategy",
+        "no solution",
+        "not found",
+        "did not find",
+        "could not find",
+        "failed to find",
+        "failed to meet",
+        "fails to meet",
+        "did not meet",
+        "does not meet",
+        "not meet",
+        "below the required",
+        "below required",
+        "below 55",
+        "under 55",
+        "did not clear",
+        "does not clear",
+        "failed the gate",
+        "fails the gate",
+        "slightly negative",
+        "negative pnl",
+        "not profitable"
+    )
+
+    foreach ($pattern in $patterns) {
+        if ($text.Contains($pattern)) {
+            return "Codex claimed success, but its own summary says the goal was not actually acquired: '$pattern'."
+        }
+    }
+
+    return $null
 }
 
 function Convert-AttemptHistoryToText {
@@ -1194,6 +1264,7 @@ function Write-HumanResult {
     $summary = Get-ObjectPropertyValue -Object $codexResult -Name "attempt_summary"
     $context = Get-ObjectPropertyValue -Object $codexResult -Name "context"
     $failure = Get-ObjectPropertyValue -Object $codexResult -Name "failure_details"
+    $override = Get-ObjectPropertyValue -Object $LoopResult -Name "unmet_goal_override"
     $filesChanged = @(Get-ObjectPropertyValue -Object $codexResult -Name "files_changed")
     $changesMade = @(Get-ObjectPropertyValue -Object $codexResult -Name "changes_made")
 
@@ -1227,6 +1298,9 @@ function Write-HumanResult {
 
     if ($LoopResult.actual_status -ne "success" -and -not [string]::IsNullOrWhiteSpace([string]$failure)) {
         Write-Host ("Failure: {0}" -f (Format-ResultText -Text $failure -MaxChars 500))
+    }
+    elseif ($LoopResult.actual_status -ne "success" -and -not [string]::IsNullOrWhiteSpace([string]$override)) {
+        Write-Host ("Failure: {0}" -f (Format-ResultText -Text $override -MaxChars 500))
     }
     elseif (-not [string]::IsNullOrWhiteSpace([string]$context)) {
         Write-Host ("Context: {0}" -f (Format-ResultText -Text $context -MaxChars 500))
@@ -1399,6 +1473,7 @@ Rules:
   SUCCESS CRITERIA:
 - Keep the goal concise but complete, usually 150 to 350 words for complex requests.
 - Preserve concrete constraints, metrics, file/project targets, validation requirements, and success criteria from the user.
+- Success criteria must describe actual acquisition of the requested result. Do not add "or explain why it could not be done" as a success condition unless the user explicitly asked only for an investigation/report.
 - Make implicit validation needs explicit when they are naturally required by the request, such as testing across provided datasets, avoiding overfitting, and reporting relevant metrics.
 - Do not add instructions about retrying, looping, JSON output, terminal interaction, or approval; the wrapper handles those.
 - Do not invent unrelated requirements.
@@ -1449,6 +1524,99 @@ $Modification
         LastMessagePath = $lastMessagePath
         EventsPath      = $eventsPath
         PromptPath      = $promptPath
+    }
+}
+
+function Join-ProcessArguments {
+    param([string[]]$Arguments)
+
+    $quoted = foreach ($argument in $Arguments) {
+        if ($null -eq $argument) {
+            '""'
+        }
+        elseif ($argument -notmatch '[\s"]') {
+            $argument
+        }
+        else {
+            '"' + ($argument -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
+        }
+    }
+
+    return ($quoted -join " ")
+}
+
+function Start-WorkingSpinner {
+    if ($ShowCommands -or [Console]::IsOutputRedirected) {
+        return $null
+    }
+
+    $state = [hashtable]::Synchronized(@{
+        Running = $true
+        Paused  = $false
+        Step    = 0
+    })
+
+    $spinner = [PowerShell]::Create()
+    [void]$spinner.AddScript({
+        param($State)
+
+        while ($State.Running) {
+            if (-not $State.Paused) {
+                $dots = "." * (($State.Step % 3) + 1)
+                [Console]::Write("`r  Working{0}   " -f $dots)
+                $State.Step++
+            }
+            Start-Sleep -Milliseconds 500
+        }
+
+        [Console]::Write("`r{0}`r" -f (" " * 32))
+    }).AddArgument($state)
+
+    [pscustomobject]@{
+        PowerShell = $spinner
+        Handle     = $spinner.BeginInvoke()
+        State      = $state
+    }
+}
+
+function Suspend-WorkingSpinner {
+    param([AllowNull()]$Spinner)
+
+    if ($null -eq $Spinner) {
+        return
+    }
+
+    $Spinner.State.Paused = $true
+    [Console]::Write("`r{0}`r" -f (" " * 32))
+}
+
+function Resume-WorkingSpinner {
+    param([AllowNull()]$Spinner)
+
+    if ($null -eq $Spinner) {
+        return
+    }
+
+    $Spinner.State.Paused = $false
+}
+
+function Stop-WorkingSpinner {
+    param([AllowNull()]$Spinner)
+
+    if ($null -eq $Spinner) {
+        return
+    }
+
+    $Spinner.State.Running = $false
+    try {
+        $Spinner.PowerShell.EndInvoke($Spinner.Handle)
+    }
+    catch {
+        # Best-effort terminal nicety only.
+    }
+    finally {
+        $Spinner.PowerShell.Dispose()
+        [Console]::Write("`r{0}`r" -f (" " * 32))
     }
 }
 
@@ -1508,23 +1676,32 @@ function Invoke-CodexAttempt {
     Push-Location -LiteralPath $WorkingDirectory
     $oldErrorActionPreference = $ErrorActionPreference
     $lineList = New-Object 'System.Collections.Generic.List[string]'
+    $spinner = $null
     try {
         $ErrorActionPreference = "Continue"
+        $spinner = Start-WorkingSpinner
         $Prompt | & codex @args 2>&1 | ForEach-Object {
+            Suspend-WorkingSpinner -Spinner $spinner
             $line = $_.ToString()
             $lineList.Add($line) | Out-Null
             Write-CodexEventProgress -Line $line
+            Resume-WorkingSpinner -Spinner $spinner
         }
+        Stop-WorkingSpinner -Spinner $spinner
+        $spinner = $null
         $exitCode = $LASTEXITCODE
         if ($null -eq $exitCode) {
             $exitCode = if ($?) { 0 } else { 1 }
         }
     }
     catch {
+        Stop-WorkingSpinner -Spinner $spinner
+        $spinner = $null
         $lineList.Add($_.Exception.Message) | Out-Null
         $exitCode = 1
     }
     finally {
+        Stop-WorkingSpinner -Spinner $spinner
         $ErrorActionPreference = $oldErrorActionPreference
         Pop-Location
     }
@@ -1671,6 +1848,8 @@ $verifierSection
 
 ## Success Rule
 $successRule
+
+If the goal asks Codex to find, create, fix, implement, or validate something, success means that concrete result exists and satisfies the criteria. If no qualifying result was found, the attempt must return JSON status "failure" even if it produced a useful report explaining why.
 
 ## Retry Rule
 Each attempt must use the accumulated previous attempt context as diagnostic evidence while still pursuing the full original goal above.
@@ -1871,13 +2050,30 @@ $runDir
     $previousDiffHash = $currentDiffHash
 
     $codexClaimStatus = Get-CodexClaimStatus -CodexResultObject $codexJsonResult.Object
+    $unmetGoalOverride = if (($null -eq $codexJsonResult.ParseError) -and $codexClaimStatus -eq "success") {
+        Test-CodexResultIndicatesUnmetGoal -CodexResultObject $codexJsonResult.Object
+    }
+    else {
+        $null
+    }
     $status = if ($hasVerifier) {
         if ($verifier.ExitCode -eq 0) { "success" } else { "failure" }
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace([string]$unmetGoalOverride)) {
+        "failure"
     }
     else {
         if (($null -eq $codexJsonResult.ParseError) -and $codexClaimStatus -eq "success") { "success" } else { "failure" }
     }
-    $decisionSource = if ($hasVerifier) { "external_verifier" } else { "codex_json_status" }
+    $decisionSource = if ($hasVerifier) {
+        "external_verifier"
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace([string]$unmetGoalOverride)) {
+        "codex_json_success_overridden_unmet_goal"
+    }
+    else {
+        "codex_json_status"
+    }
     $loopResultPath = Join-Path $runDir "loop-result.json"
     $loopResult = [ordered]@{
         actual_status             = $status
@@ -1891,6 +2087,7 @@ $runDir
         codex_exit_code           = $codexResult.ExitCode
         codex_thread_id           = $sessionId
         codex_result_parse_error  = $codexJsonResult.ParseError
+        unmet_goal_override       = $unmetGoalOverride
         codex_result              = $codexJsonResult.Object
         git_summary_after         = $gitSummaryAfter
         run_dir                   = $runDir
@@ -1944,6 +2141,9 @@ $runDir
 
     if ($hasVerifier) {
         Write-Host "Next: retrying because the external verifier did not pass."
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace([string]$unmetGoalOverride)) {
+        Write-Host "Next: retrying because Codex reported success but the goal was not actually acquired."
     }
     else {
         Write-Host "Next: retrying because the status is '$codexClaimStatus'."
